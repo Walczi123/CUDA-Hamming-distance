@@ -7,27 +7,17 @@
 #include <ctime> 
 #include <fstream>
 #include <string>
-#include<iostream>
+#include <iostream>
+#include <chrono>
 
-#define SIZE 1000
+#define SIZE 100
 #define SEQUENCES 100
 #define BLOCK 32
 #define THREATS 1024
 
-//__global__ void sum(int* d_sum, int* d_data)
-//{
-//	extern __shared__ float temp[];
-//	int tid = threadIdx.x;
-//	temp[tid] = d_data[tid + blockIdx.x * blockDim.x];
-//	for (int d = blockDim.x >> 1; d >= 1; d >>= 1) {
-//		__syncthreads();
-//		if (tid < d) temp[tid] += temp[tid + d];
-//	}
-//	if (tid == 0) d_sum[blockIdx.x] = temp[0];
-//}
-
 __global__ void HammingDistance(int *c, const int* a, const int* b ,long const int* size)
 {
+	//cudaMemset(c, 0, sizeof(int));
 	int i = threadIdx.x + blockDim.x * blockIdx.x;
 	int stride = blockDim.x * gridDim.x;
 
@@ -36,7 +26,13 @@ __global__ void HammingDistance(int *c, const int* a, const int* b ,long const i
 		//atomicAdd(c, a[i] ^ b[i]);
 		a[i] != b[i] ? atomicAdd(c, 1) : 1;
 	}
+}
 
+void HammingDistanceCPU(int* c, const int* a, const int* b, long const int* size)
+{
+	for (int i = 0; i < *size; i +=1) {
+		if(a[i] != b[i]) *c=*c+1;
+	}
 }
 
 int* RandBinSeq(int n) {
@@ -106,17 +102,19 @@ int main()
 	int** seq = readFromFile();
 	long  int* size = (long int*)malloc(sizeof(long int));
 	*size = SIZE;
-	int* c = new int[SEQUENCES * (SEQUENCES - 1)];
-
-
+	int* c = new int[SEQUENCES * (SEQUENCES - 1)/2];
 	int* dev_a = 0;
 	int* dev_b = 0;
 	int* dev_c = 0;
 	long int* sizeC = 0;
 	cudaError_t cudaStatus;
+	int absolute = -1,k=0,s;
 
-	//cudaStatus = cudaMalloc((void**)&dev_c, sizeof(int));
-	cudaStatus = cudaMalloc((void**)&dev_c, (SEQUENCES * (SEQUENCES - 1)) * sizeof(int));
+	for (int i = 0; i < SEQUENCES * (SEQUENCES - 1)/2; i++)
+		c[i] = 0;
+
+#pragma region GPU
+	cudaStatus = cudaMalloc((void**)&dev_c, (SEQUENCES * (SEQUENCES - 1) / 2) * sizeof(int));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
@@ -153,40 +151,46 @@ int main()
 
 	// Launch a kernel on the GPU with one thread for each element.
 	cudaEventRecord(start);
-	int k = 0;
-	for (int i = 0; i < SEQUENCES-1; i++) {
-		for (int j = i+1; j < SEQUENCES; j++,k++) {
-			cudaStatus = cudaMemcpy(dev_a, seq[i], *size * sizeof(int), cudaMemcpyHostToDevice);
-			if (cudaStatus != cudaSuccess) {
-				fprintf(stderr, "cudaMemcpy a failed!");
-				goto Error;
+	k = 0;
+	cudaStatus = cudaMemcpy(dev_a, seq[0], *size * sizeof(int), cudaMemcpyHostToDevice);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy a failed!");
+		goto Error;
+	}
+	for (int i = 1; i < SEQUENCES; i++, k++) {
+		cudaStatus = cudaMemcpy(dev_b, seq[i], *size * sizeof(int), cudaMemcpyHostToDevice);
+		if (cudaStatus != cudaSuccess) {
+			fprintf(stderr, "cudaMemcpy b failed!");
+			goto Error;
+		}
+		HammingDistance <<< BLOCK, THREATS >>> (dev_c + k, dev_a, dev_b, sizeC);
+	}
+
+	cudaStatus = cudaMemcpy(c, dev_c, sizeof(int) * SEQUENCES * (SEQUENCES - 1) / 2, cudaMemcpyDeviceToHost);
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy c failed!");
+		goto Error;
+	}
+
+
+	for (int i = 1; i < SEQUENCES - 1; i++) {
+		for (int j = i + 1; j < SEQUENCES; j++, k++) {
+			absolute = abs(c[i - 1] - c[j - 1]);
+			if (absolute > 0 && absolute < 3) {
+				cudaStatus = cudaMemcpy(dev_a, seq[i], *size * sizeof(int), cudaMemcpyHostToDevice);
+				if (cudaStatus != cudaSuccess) {
+					fprintf(stderr, "cudaMemcpy a failed!");
+					goto Error;
+				}
+
+				cudaStatus = cudaMemcpy(dev_b, seq[j], *size * sizeof(int), cudaMemcpyHostToDevice);
+				if (cudaStatus != cudaSuccess) {
+					fprintf(stderr, "cudaMemcpy b failed!");
+					goto Error;
+				}
+
+				HammingDistance <<< BLOCK, THREATS >>> (dev_c + k, dev_a, dev_b, sizeC);
 			}
-
-			cudaStatus = cudaMemcpy(dev_b, seq[j], *size * sizeof(int), cudaMemcpyHostToDevice);
-			if (cudaStatus != cudaSuccess) {
-				fprintf(stderr, "cudaMemcpy b failed!");
-				goto Error;
-			}
-
-			//*c = 0;
-			//cudaStatus = cudaMemcpy(dev_c, c, sizeof(int), cudaMemcpyHostToDevice);
-			//if (cudaStatus != cudaSuccess) {
-			//	fprintf(stderr, "cudaMemcpy b failed!");
-			//	goto Error;
-			//}
-			 
-
-			HammingDistance <<< BLOCK, THREATS >>> (dev_c+k, dev_a, dev_b, sizeC);
-			//HammingDistance <<< BLOCK, THREATS >>> (dev_c, dev_a, dev_b, sizeC);
-
-			//cudaStatus = cudaMemcpy(c, dev_c, sizeof(int), cudaMemcpyDeviceToHost);
-			//if (cudaStatus != cudaSuccess) {
-			//	fprintf(stderr, "cudaMemcpy c failed!");
-			//	goto Error;
-			//}
-			//printf("The Hamming distance between %d and %d seqence is %d. ", i, j, *c);
-			//if (*c == 1)printf("Pair with distance equal 1");
-			//printf("\n");
 		}
 	}
 	cudaEventRecord(stop);
@@ -208,29 +212,64 @@ int main()
 	}
 
 	// Copy output vector from GPU buffer to host memory.
-	cudaStatus = cudaMemcpy(c, dev_c, sizeof(int) * SEQUENCES * (SEQUENCES - 1), cudaMemcpyDeviceToHost);
+	cudaStatus = cudaMemcpy(c, dev_c, sizeof(int) * SEQUENCES * (SEQUENCES - 1) / 2, cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy c failed!");
 		goto Error;
 	}
 	k = 0;
-	int s = 0;
+	s = 0;
 	for (int i = 0; i < SEQUENCES - 1; i++) {
-		for (int j = i+1; j < SEQUENCES; j++,k++) {
+		for (int j = i + 1; j < SEQUENCES; j++, k++) {
 			if (c[k] == 1) {
 				s++;
-				printf("Pair with distance equal 1. ");
 				printf("The Hamming distance between %d and %d seqence is %d.\n", i, j, *(c + k));
 			}
 		}
 	}
 	printf("There is %d pairs with the Hamming distance equal 1\n", s);
 
-
 	float milliseconds = 0;
 	cudaEventElapsedTime(&milliseconds, start, stop);
-	printf("Time ms %f \n\n\n",milliseconds);
-
+	printf("Time of GPU ms %f \n\n\n", milliseconds);
+#pragma endregion
+#pragma region CPU
+	for (int i = 0; i < SEQUENCES * (SEQUENCES - 1) / 2; i++)
+		c[i] = 0;
+	int* a, * b;
+	a = seq[0];
+	k = 0;
+	auto startCPU = std::chrono::high_resolution_clock::now();
+	for (int i = 1; i < SEQUENCES; i++, k++) {
+		b = seq[i];
+		HammingDistanceCPU(c + k, a, b, size);
+	}
+	for (int i = 1; i < SEQUENCES - 1; i++) {
+		for (int j = i + 1; j < SEQUENCES; j++, k++) {
+			absolute = abs(c[i - 1] - c[j - 1]);
+			if (absolute > 0 && absolute < 3) {	
+				a = seq[i];
+				b = seq[j];
+				HammingDistanceCPU(c+k, a, b, size);
+			}
+		}
+	}
+	auto stopCPU = std::chrono::high_resolution_clock::now();
+	k = 0;
+	s = 0;
+	for (int i = 0; i < SEQUENCES - 1; i++) {
+		for (int j = i + 1; j < SEQUENCES; j++, k++) {
+			if (c[k] == 1) {
+				s++;
+				printf("The Hamming distance between %d and %d seqence is %d.\n", i, j, *(c + k));
+			}
+		}
+	}
+	printf("There is %d pairs with the Hamming distance equal 1\n", s);
+	long long int duration = std::chrono::duration_cast<std::chrono::microseconds>(stopCPU - startCPU).count();
+	printf("Time od CPU ms %lld \n\n\n", duration);
+#pragma endregion
+	
 Error:
 	cudaFree(dev_c);
 	cudaFree(dev_a);
