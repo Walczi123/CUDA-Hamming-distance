@@ -10,9 +10,9 @@
 #include <iostream>
 #include <chrono>
 
-#define SIZE 100
+#define SIZE 1000000
 #define SEQUENCES 100
-#define BLOCK 32
+#define BLOCK 1024
 #define THREATS 1024
 
 __global__ void HammingDistance(int *c, const int* a, const int* b ,long const int* size)
@@ -76,7 +76,7 @@ int** readFromFile() {
 	//char line [SIZE + 3] ;
 	std::string line;
 	int** result = new int* [SEQUENCES];
-	int i = 0, l = 0;
+	int i = 0, l = 0,per=0;
 	if (file.good() == true)
 	{
 		while (l<SEQUENCES) {
@@ -86,6 +86,9 @@ int** readFromFile() {
 				r[i-1] = (line[i] - '0');
 			}
 			result[l++] = r;
+			if ((100 * l / SEQUENCES) > per) {
+				printf("%d %\n", per++);
+			}
 		}
 		file.close();
 	}
@@ -97,7 +100,6 @@ int** readFromFile() {
 int main()
 {
 	srand(time(NULL));
-	//srand(1);
 	//writeToFile();
 	int** seq = readFromFile();
 	long  int* size = (long int*)malloc(sizeof(long int));
@@ -108,7 +110,7 @@ int main()
 	int* dev_c = 0;
 	long int* sizeC = 0;
 	cudaError_t cudaStatus;
-	int absolute = -1,k=0,s;
+	int absolute = -1,k=0,s,per=0;
 
 	for (int i = 0; i < SEQUENCES * (SEQUENCES - 1)/2; i++)
 		c[i] = 0;
@@ -191,6 +193,9 @@ int main()
 
 				HammingDistance <<< BLOCK, THREATS >>> (dev_c + k, dev_a, dev_b, sizeC);
 			}
+			/*if ((100 * k / (SEQUENCES * (SEQUENCES - 1) / 2)) > per) {
+				printf("%d %\n", per++);
+			}*/
 		}
 	}
 	cudaEventRecord(stop);
@@ -239,6 +244,7 @@ int main()
 	int* a, * b;
 	a = seq[0];
 	k = 0;
+	per = 0;
 	auto startCPU = std::chrono::high_resolution_clock::now();
 	for (int i = 1; i < SEQUENCES; i++, k++) {
 		b = seq[i];
@@ -252,6 +258,9 @@ int main()
 				b = seq[j];
 				HammingDistanceCPU(c+k, a, b, size);
 			}
+			/*if ((100 * k / (SEQUENCES * (SEQUENCES - 1) / 2)) > per) {
+				printf("%d %\n", per++);
+			}*/
 		}
 	}
 	auto stopCPU = std::chrono::high_resolution_clock::now();
@@ -266,7 +275,7 @@ int main()
 		}
 	}
 	printf("There is %d pairs with the Hamming distance equal 1\n", s);
-	long long int duration = std::chrono::duration_cast<std::chrono::microseconds>(stopCPU - startCPU).count();
+	long long int duration = std::chrono::duration_cast<std::chrono::milliseconds>(stopCPU - startCPU).count();
 	printf("Time od CPU ms %lld \n\n\n", duration);
 #pragma endregion
 	
